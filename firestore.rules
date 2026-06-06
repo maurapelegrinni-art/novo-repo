@@ -1,0 +1,58 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+    function isActiveStaff() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().data.active == true;
+    }
+    function isAdmin() {
+      return isActiveStaff() && userDoc().data.role == 'admin';
+    }
+
+    // Marca de "primeiro acesso concluído". Leitura pública para o app saber
+    // se deve oferecer a criação do administrador; criação única.
+    match /meta/bootstrap {
+      allow read: if true;
+      allow create: if signedIn() && !exists(/databases/$(database)/documents/meta/bootstrap);
+      allow update, delete: if isAdmin();
+    }
+
+    // Demais metadados (ex.: meta/pricing): equipe lê, admin grava.
+    match /meta/{doc} {
+      allow read: if isActiveStaff();
+      allow write: if isAdmin();
+    }
+
+    // Perfis de usuário.
+    match /users/{uid} {
+      allow read: if isActiveStaff();
+      allow create: if isAdmin()
+        || (request.auth.uid == uid && !exists(/databases/$(database)/documents/meta/bootstrap));
+      allow update, delete: if isAdmin();
+    }
+
+    // Backups: somente administrador.
+    match /backups/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // Dados clínicos e financeiros: compartilhados por toda a equipe ativa.
+    match /tutors/{id}      { allow read, write: if isActiveStaff(); }
+    match /patients/{id}    { allow read, write: if isActiveStaff(); }
+    match /exams/{id}       { allow read, write: if isActiveStaff(); }
+    match /sessions/{id}    { allow read, write: if isActiveStaff(); }
+    match /packages/{id}    { allow read, write: if isActiveStaff(); }
+    match /payments/{id}    { allow read, write: if isActiveStaff(); }
+    match /evaluations/{id} { allow read, write: if isActiveStaff(); }
+    match /plans/{id}       { allow read, write: if isActiveStaff(); }
+  }
+}

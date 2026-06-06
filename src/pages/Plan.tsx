@@ -1,36 +1,62 @@
 import { useState } from 'react';
-import { Target, CheckCircle2, ClipboardCheck, Sparkles, BookOpen } from 'lucide-react';
-import { useAppStore } from '../store/useAppStore';
+import { Target, CheckCircle2, ClipboardCheck, Sparkles, BookOpen, Wand2, Stethoscope } from 'lucide-react';
+import { useAppStore, useCurrentPatient, useCurrentEvaluation, useCurrentPlan, type Exam, type PlanData } from '../store/useAppStore';
+import { summarizeEvaluation, summarizeNeuro, buildCorrelation, examImpactLabel } from '../utils/summary';
+import { suggestPlan } from '../utils/clinicalLogic';
+import { DIAGNOSES } from '../constants/registry';
+import NoPatientNotice from '../components/NoPatientNotice';
 
 export default function Plan() {
   const [activeTab, setActiveTab] = useState<'base' | 'correlation'>('base');
   const [showLiterature, setShowLiterature] = useState(false);
   const [promptText, setPromptText] = useState('');
 
-  const patient = useAppStore((state) => state.patient);
-  const evaluation = useAppStore((state) => state.evaluation);
-  const exams = useAppStore((state) => state.exams);
+  const patient = useCurrentPatient();
+  const evaluation = useCurrentEvaluation();
+  const plan = useCurrentPlan();
+  const allExams = useAppStore((state) => state.exams);
   const updateExam = useAppStore((state) => state.updateExam);
-  
-  const plan = useAppStore((state) => state.plan);
   const setPlan = useAppStore((state) => state.setPlan);
 
+  const exams = allExams.filter((e) => e.patientId === patient?.id);
+  const funcSummary = summarizeEvaluation(evaluation);
+  const neuroSummary = summarizeNeuro(evaluation);
+
+  // Exames considerados na correlação (todos, se nenhum marcado).
+  const consideredExams = plan.selectedExamIds.length
+    ? exams.filter((e) => plan.selectedExamIds.includes(e.id))
+    : exams;
+
+  const fillCorrelation = () => {
+    setPlan({ correlationNotes: buildCorrelation(evaluation, consideredExams, plan) });
+  };
+
+  const addDiagnosis = (dx: string) => {
+    const current = plan.diagnosis.trim();
+    if (current.toLowerCase().includes(dx.toLowerCase())) return;
+    setPlan({ diagnosis: current ? `${current}; ${dx}` : dx });
+  };
+
+  const applySuggestion = () => {
+    setPlan(suggestPlan(evaluation, consideredExams));
+  };
+
+  if (!patient) return <NoPatientNotice />;
+
   const generatePrompt = () => {
+    const evalLines = [...funcSummary, ...neuroSummary].map((i) => `${i.label}: ${i.value}`).join('\n') || 'Não preenchido';
     const prompt = `Atue como um especialista em fisioterapia veterinária.
 Crie um plano terapêutico veterinário baseado em evidências, correlacionando avaliação funcional, exames complementares e objetivos clínicos. Indique condutas possíveis, frequência de sessões, critérios de evolução, sinais de alerta e justificativa técnica. Não substituir julgamento clínico da médica veterinária responsável.
 
 *DADOS DO PACIENTE*
-Paciente: ${patient.patientName} (${patient.patientSpecies}, ${patient.patientBreed}, ${patient.patientAge})
+Paciente: ${patient.name} (${patient.species}, ${patient.breed})
 Diagnóstico Clínico (informado): ${plan.diagnosis}
 
-*ACHADOS DA AVALIAÇÃO FUNCIONAL*
-Dor: ${evaluation.painLevel}
-Marcha: ${evaluation.gait}
-Postura: ${evaluation.posture}
-Neurológico/Obs: ${evaluation.neuro}
+*ACHADOS DA AVALIAÇÃO FUNCIONAL E NEUROLÓGICA*
+${evalLines}
 
 *EXAMES COMPLEMENTARES*
-${exams.map(e => `- ${e.type} (${e.date}): ${e.findings} [Impacto: ${e.status}]`).join('\n')}
+${consideredExams.map((e) => `- ${e.type} (${e.date}): ${e.findings} [Impacto: ${examImpactLabel(e.status)}]`).join('\n') || 'Nenhum'}
 
 *OBJETIVOS DO TRATAMENTO*
 ${plan.correlationNotes || 'Não preenchido'}
@@ -69,11 +95,19 @@ ${plan.correlationNotes || 'Não preenchido'}
 
       {activeTab === 'base' ? (
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 animate-fade-in">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="p-3 bg-purple-100 rounded-lg text-purple-600">
-              <Target size={24} />
+          <div className="flex items-center justify-between gap-3 mb-6">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-purple-100 rounded-lg text-purple-600">
+                <Target size={24} />
+              </div>
+              <h2 className="text-xl font-semibold text-gray-800">Diretrizes do Tratamento</h2>
             </div>
-            <h2 className="text-xl font-semibold text-gray-800">Diretrizes do Tratamento</h2>
+            <button
+              onClick={applySuggestion}
+              className="text-sm bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white px-3 py-2 rounded-lg font-medium flex items-center gap-1.5 shadow-sm"
+            >
+              <Wand2 size={16} /> Sugerir plano pela avaliação
+            </button>
           </div>
 
           <div className="space-y-6">
@@ -85,6 +119,15 @@ ${plan.correlationNotes || 'Não preenchido'}
                 value={plan.diagnosis}
                 onChange={(e) => setPlan({ diagnosis: e.target.value })}
               ></textarea>
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                <span className="text-xs text-gray-400 flex items-center gap-1 mr-1"><Stethoscope size={13} /> Diagnósticos rápidos:</span>
+                {DIAGNOSES.map((dx) => (
+                  <button key={dx} type="button" onClick={() => addDiagnosis(dx)}
+                    className="text-[11px] px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full hover:bg-purple-100">
+                    {dx}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div>
@@ -139,20 +182,35 @@ ${plan.correlationNotes || 'Não preenchido'}
       ) : (
         <div className="space-y-6 animate-fade-in">
           
-          {/* Resumo Avaliação Funcional */}
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">Resumo da Avaliação Funcional</h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-              <div className="bg-gray-50 p-3 rounded-lg"><span className="block text-gray-500 text-xs mb-1">Dor</span><span className="font-medium">{evaluation.painLevel || 'N/A'}</span></div>
-              <div className="bg-gray-50 p-3 rounded-lg"><span className="block text-gray-500 text-xs mb-1">Marcha</span><span className="font-medium">{evaluation.gait || 'N/A'}</span></div>
-              <div className="bg-gray-50 p-3 rounded-lg"><span className="block text-gray-500 text-xs mb-1">Postura</span><span className="font-medium">{evaluation.posture || 'N/A'}</span></div>
-              <div className="bg-gray-50 p-3 rounded-lg"><span className="block text-gray-500 text-xs mb-1">Neuro/Obs</span><span className="font-medium line-clamp-2">{evaluation.neuro || 'N/A'}</span></div>
-            </div>
+          {/* Fluxo de correlação */}
+          <div className="flex items-center justify-center gap-2 text-xs font-medium text-gray-500">
+            <span className="px-3 py-1 rounded-full bg-purple-100 text-purple-700">Avaliação</span>
+            <span>→</span>
+            <span className="px-3 py-1 rounded-full bg-blue-100 text-blue-700">Exames</span>
+            <span>→</span>
+            <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-700">Plano Terapêutico</span>
           </div>
 
-          {/* Exames Anexados */}
+          {/* Resumo Avaliação (Funcional + Neuro) */}
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">Exames Anexados</h3>
+            <h3 className="text-lg font-semibold text-gray-800 mb-4">Resumo da Avaliação</h3>
+            {funcSummary.length === 0 && neuroSummary.length === 0 ? (
+              <p className="text-sm text-gray-500">Avaliação ainda não preenchida.</p>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                {[...funcSummary, ...neuroSummary].map((i) => (
+                  <div key={i.label} className="bg-gray-50 p-3 rounded-lg">
+                    <span className="block text-gray-500 text-xs mb-1">{i.label}</span>
+                    <span className="font-medium">{i.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Exames Anexados + análise de impacto */}
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <h3 className="text-lg font-semibold text-gray-800 mb-4">Exames e Impacto na Conduta</h3>
             {exams.length === 0 ? (
               <p className="text-sm text-gray-500">Nenhum exame anexado.</p>
             ) : (
@@ -161,10 +219,10 @@ ${plan.correlationNotes || 'Não preenchido'}
                   <div key={exam.id} className="p-4 border border-gray-200 rounded-xl">
                     <p className="font-medium text-gray-800">{exam.type} - {exam.date}</p>
                     <p className="text-sm text-gray-600 mt-1 mb-3">{exam.findings}</p>
-                    <select 
+                    <select
                       className="w-full md:w-auto p-2 text-sm bg-gray-50 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-purple-500"
                       value={exam.status}
-                      onChange={(e) => updateExam(exam.id, { status: e.target.value as any })}
+                      onChange={(e) => updateExam(exam.id, { status: e.target.value as Exam['status'] })}
                     >
                       <option value="">Análise do Exame...</option>
                       <option value="confirma">Confirma a conduta clínica</option>
@@ -179,7 +237,16 @@ ${plan.correlationNotes || 'Não preenchido'}
 
           {/* Correlação Clínica */}
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">Correlação Clínica</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-800">Correlação Clínica</h3>
+              <button
+                onClick={fillCorrelation}
+                className="text-sm bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 px-3 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5"
+              >
+                <Wand2 size={16} />
+                Gerar correlação
+              </button>
+            </div>
             <textarea
               className="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500 resize-none h-32"
               placeholder="Com base nos achados da avaliação funcional e nos exames apresentados, os principais objetivos terapêuticos são..."
@@ -204,7 +271,7 @@ ${plan.correlationNotes || 'Não preenchido'}
                   <input
                     type="text"
                     className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-purple-500 text-sm"
-                    value={(plan as any)[field.key]}
+                    value={plan[field.key as keyof PlanData]}
                     onChange={(e) => setPlan({ [field.key]: e.target.value })}
                   />
                 </div>
@@ -269,7 +336,7 @@ ${plan.correlationNotes || 'Não preenchido'}
                     <label className="block text-sm font-medium text-purple-900 mb-1">{field.label}</label>
                     <textarea
                       className="w-full p-3 bg-white border border-purple-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500 resize-none h-20 text-sm"
-                      value={(plan as any)[field.key]}
+                      value={plan[field.key as keyof PlanData]}
                       onChange={(e) => setPlan({ [field.key]: e.target.value })}
                     ></textarea>
                   </div>

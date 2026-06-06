@@ -1,73 +1,76 @@
-# React + TypeScript + Vite
+# FisioVet — Padrão Pelegrinni
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Aplicativo web de **fisioterapia e reabilitação veterinária** (React + TypeScript + Vite).
+Gerencia pacientes, tutores, avaliações funcionais/neurológicas, exames, planos
+terapêuticos, sessões, financeiro e relatórios — com dados na nuvem (Firebase),
+funcionamento **offline** e sincronização automática.
 
-Currently, two official plugins are available:
+## Principais funcionalidades
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **Cadastro inteligente** por tutor/paciente (CPF do responsável é o identificador).
+- **Busca** por nome do paciente, nome/CPF/telefone do responsável ou prontuário.
+- **Avaliação** funcional e neurológica clicável, com **autonomia funcional calculada**
+  e **classificação neurológica** automática (apoio à decisão).
+- **Exames** com upload de PDF/JPG/PNG/DOCX (e mais), relacionados ao paciente.
+- **Plano terapêutico** com diagnósticos rápidos e **sugestão automática a partir da avaliação**.
+- **Sessões** com múltiplas terapias e dosimetria individual.
+- **Financeiro**: sessão avulsa, pacotes de 5 e 10, deslocamento, taxas de cartão,
+  valor líquido, recibo em PDF e envio por WhatsApp/e-mail.
+- **Relatórios** de avaliação e evolução em PDF.
+- **Multiusuário** (Administrador / Assistente) com login por e-mail e senha.
+- **Backup automático** (snapshot no Firestore) + export JSON.
 
-## React Compiler
+## Arquitetura
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- Estado de UI: **Zustand** (em memória, reativo).
+- Persistência/sincronização: **Firestore** com cache local persistente
+  (offline-first; escritas enfileiram e sincronizam ao reconectar). Ver `src/services/sync.ts`.
+- Arquivos: **IndexedDB** (offline imediato) + **Firebase Storage** (sincronizado). Ver `src/services/fileStorage.ts`.
+- Autenticação e papéis: `src/auth/`.
+- Lógica clínica: `src/utils/clinicalLogic.ts`.
 
-## Expanding the ESLint configuration
+## Configuração do Firebase (obrigatória)
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+1. Crie um projeto em https://console.firebase.google.com.
+2. **Authentication** → *Sign-in method* → habilite **E-mail/senha**.
+3. **Firestore Database** → crie o banco (modo produção).
+4. **Storage** → crie o bucket.
+5. Copie a config do app (Configurações do projeto → Seus apps → SDK) e cole em
+   `src/firebase/config.ts` no objeto `firebaseConfig`.
+6. Publique as regras de segurança deste repositório:
+   - Firestore → cole o conteúdo de `firestore.rules`.
+   - Storage → cole o conteúdo de `storage.rules`.
+   - (Opcional, via CLI) `firebase deploy --only firestore:rules,storage`.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+### Primeiro acesso
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+Ao abrir o app pela primeira vez (sem nenhum usuário), a tela oferece
+**“Criar administrador”**. Cadastre a Dra. Maura como administradora.
+Depois, em **Usuários**, o administrador cria os demais (ex.: Assistente Fabiano).
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### Papéis
+
+- **Administrador**: tudo + gerenciar usuários, preços, exclusões e backup/restauração.
+- **Assistente**: cadastra/edita pacientes, avaliações, exames, sessões e recebimentos.
+
+## Executar localmente
+
+```bash
+npm install
+npm run dev      # http://localhost:5173
+npm run build    # checa tipos e gera build de produção
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Estrutura de pastas
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- `src/pages/` – páginas (Identificação, Avaliação, Exames, Plano, Sessões, Financeiro, Relatórios, Usuários).
+- `src/auth/` – autenticação, contexto e papéis.
+- `src/store/` – store Zustand.
+- `src/services/` – sync (Firestore), arquivos (Storage) e backup.
+- `src/utils/` – busca, resumos, lógica clínica e geração de PDF.
+- `src/constants/` – listas clínicas e comerciais.
+- `firestore.rules`, `storage.rules` – regras de segurança.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## Licença
+
+MIT — consulte `LICENSE`.

@@ -1,0 +1,18 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isActiveStaff() {
+      return request.auth != null
+        && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.active == true;
+    }
+
+    // Arquivos de exame: pacientes/{patientId}/exames/{examId}/arquivos/{fileId}
+    match /pacientes/{patientId}/{allPaths=**} {
+      allow read: if isActiveStaff();
+      allow write: if isActiveStaff() && request.resource.size < 30 * 1024 * 1024;
+    }
+  }
+}

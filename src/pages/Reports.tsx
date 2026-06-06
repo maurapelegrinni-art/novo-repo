@@ -1,19 +1,58 @@
 import { useState } from 'react';
-import { FileText, Download, Share2, Printer } from 'lucide-react';
+import { FileText, Download } from 'lucide-react';
+import {
+  useAppStore,
+  useCurrentPatient,
+  useCurrentEvaluation,
+  useCurrentPlan,
+  tutorOf,
+} from '../store/useAppStore';
+import { generateEvaluationReportPDF, generateEvolutionReportPDF } from '../utils/pdfGenerator';
+import { summarizeEvaluation, summarizeNeuro, examImpactLabel } from '../utils/summary';
+import { getDosimetryFields } from '../constants/clinical';
+import NoPatientNotice from '../components/NoPatientNotice';
+
+type ReportKind = 'avaliacao' | 'evolucao';
 
 export default function Reports() {
-  const [selectedReport, setSelectedReport] = useState<'avaliacao' | 'evolucao' | null>(null);
+  const [selectedReport, setSelectedReport] = useState<ReportKind | null>(null);
+
+  const patient = useCurrentPatient();
+  const evaluation = useCurrentEvaluation();
+  const plan = useCurrentPlan();
+  const allExams = useAppStore((s) => s.exams);
+  const allSessions = useAppStore((s) => s.sessions);
+  const packages = useAppStore((s) => s.packages);
+
+  if (!patient) return <NoPatientNotice />;
+
+  const tutor = tutorOf(patient);
+  const exams = allExams.filter((e) => e.patientId === patient.id);
+  const sessions = allSessions.filter((s) => s.patientId === patient.id);
+  const activePkg = packages.find((p) => p.patientId === patient.id && p.status === 'ativo');
+
+  const evalItems = [...summarizeEvaluation(evaluation), ...summarizeNeuro(evaluation)];
+  const contracted = activePkg?.sessionsContracted ?? 0;
+  const done = sessions.length;
+
+  const handleDownload = () => {
+    if (selectedReport === 'avaliacao') generateEvaluationReportPDF();
+    if (selectedReport === 'evolucao') generateEvolutionReportPDF();
+  };
 
   return (
-    <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-gray-800">Relatórios Clínicos</h2>
+    <div className="space-y-6 pb-20 lg:pb-0">
+      <header className="mb-6">
+        <h1 className="text-3xl font-bold text-gray-900">Relatórios Clínicos</h1>
+        <p className="text-gray-500 mt-2">Gere documentos em PDF a partir dos dados registrados.</p>
+      </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <button 
+        <button
           onClick={() => setSelectedReport('avaliacao')}
           className={`p-6 rounded-2xl border text-left transition-all ${
-            selectedReport === 'avaliacao' 
-              ? 'border-purple-500 bg-purple-50 shadow-sm' 
+            selectedReport === 'avaliacao'
+              ? 'border-purple-500 bg-purple-50 shadow-sm'
               : 'border-gray-200 bg-white hover:border-purple-300 hover:bg-gray-50'
           }`}
         >
@@ -21,16 +60,16 @@ export default function Reports() {
             <div className="bg-purple-100 p-3 rounded-full text-purple-700">
               <FileText className="w-6 h-6" />
             </div>
-            <h3 className="text-lg font-bold text-gray-800">Relatório da Avaliação Inicial</h3>
+            <h3 className="text-lg font-bold text-gray-800">Relatório de Avaliação</h3>
           </div>
-          <p className="text-gray-500 text-sm">Gera um documento completo contendo identificação, motivo da consulta, interpretação de exames, diagnóstico funcional e plano terapêutico sugerido.</p>
+          <p className="text-gray-500 text-sm">Identificação, histórico, avaliação funcional e neurológica, exames com impacto e plano terapêutico.</p>
         </button>
 
-        <button 
+        <button
           onClick={() => setSelectedReport('evolucao')}
           className={`p-6 rounded-2xl border text-left transition-all ${
-            selectedReport === 'evolucao' 
-              ? 'border-emerald-500 bg-emerald-50 shadow-sm' 
+            selectedReport === 'evolucao'
+              ? 'border-emerald-500 bg-emerald-50 shadow-sm'
               : 'border-gray-200 bg-white hover:border-emerald-300 hover:bg-gray-50'
           }`}
         >
@@ -40,32 +79,115 @@ export default function Reports() {
             </div>
             <h3 className="text-lg font-bold text-gray-800">Relatório de Evolução</h3>
           </div>
-          <p className="text-gray-500 text-sm">Gera um resumo do pacote: sessões realizadas vs restantes, procedimentos aplicados, evolução funcional e recomendação de alta ou continuidade.</p>
+          <p className="text-gray-500 text-sm">Sessões realizadas com terapias e dosimetria, progresso do pacote e evolução clínica.</p>
         </button>
       </div>
 
       {selectedReport && (
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mt-6 animate-in fade-in slide-in-from-bottom-4">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mt-6 animate-fade-in">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold text-gray-800">
-              Pré-visualização: {selectedReport === 'avaliacao' ? 'Avaliação Inicial' : 'Evolução Clínica'}
+              Pré-visualização: {selectedReport === 'avaliacao' ? 'Avaliação' : 'Evolução'}
             </h3>
-            <div className="flex gap-2">
-              <button className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors" title="Imprimir">
-                <Printer className="w-5 h-5" />
-              </button>
-              <button className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors" title="Compartilhar">
-                <Share2 className="w-5 h-5" />
-              </button>
-              <button className="bg-primary text-white px-4 py-2 rounded-xl font-medium hover:bg-primary-dark transition-colors flex items-center gap-2">
-                <Download className="w-4 h-4" />
-                Baixar PDF
-              </button>
-            </div>
+            <button
+              onClick={handleDownload}
+              className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-xl font-medium transition-colors flex items-center gap-2"
+            >
+              <Download className="w-4 h-4" />
+              Baixar PDF
+            </button>
           </div>
-          
-          <div className="border border-gray-200 rounded-xl p-8 bg-gray-50 aspect-[1/1.4] max-w-2xl mx-auto flex items-center justify-center text-gray-400">
-            [ O layout do PDF renderizado aparecerá aqui ]
+
+          {/* Pré-visualização */}
+          <div className="border border-gray-200 rounded-xl p-6 bg-gray-50 max-w-2xl mx-auto text-sm text-gray-700 space-y-4">
+            <div className="text-center border-b border-gray-200 pb-3">
+              <p className="font-bold text-purple-800 text-base">
+                {selectedReport === 'avaliacao' ? 'RELATÓRIO DE AVALIAÇÃO' : 'RELATÓRIO DE EVOLUÇÃO'}
+              </p>
+              <p className="text-xs text-gray-500">Dra. Maura Pelegrinni - Fisioterapia Veterinária</p>
+            </div>
+
+            <div>
+              <p className="font-semibold text-gray-800 mb-1">Identificação</p>
+              <p>Tutor: {tutor?.name || '—'}</p>
+              <p>Paciente: {patient.name || '—'} ({patient.species || '—'}, {patient.breed || '—'})</p>
+              <p>Prontuário: {patient.prontuario}</p>
+            </div>
+
+            {selectedReport === 'avaliacao' ? (
+              <>
+                {evaluation.history && (
+                  <div>
+                    <p className="font-semibold text-gray-800 mb-1">Histórico</p>
+                    <p className="whitespace-pre-wrap">{evaluation.history}</p>
+                  </div>
+                )}
+                <div>
+                  <p className="font-semibold text-gray-800 mb-1">Avaliação funcional e neurológica</p>
+                  {evalItems.length === 0 ? (
+                    <p className="text-gray-400 italic">Não preenchida.</p>
+                  ) : (
+                    <ul className="list-disc list-inside space-y-0.5">
+                      {evalItems.map((i) => (
+                        <li key={i.label}><span className="font-medium">{i.label}:</span> {i.value}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-800 mb-1">Exames</p>
+                  {exams.length === 0 ? (
+                    <p className="text-gray-400 italic">Nenhum exame anexado.</p>
+                  ) : (
+                    <ul className="list-disc list-inside space-y-0.5">
+                      {exams.map((e) => (
+                        <li key={e.id}>{e.type} ({e.date || 's/ data'}) — {examImpactLabel(e.status)}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                {plan.diagnosis && (
+                  <div>
+                    <p className="font-semibold text-gray-800 mb-1">Plano terapêutico</p>
+                    <p>{plan.diagnosis}</p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div>
+                  <p className="font-semibold text-gray-800 mb-1">Progresso do pacote</p>
+                  <p>Sessões realizadas: {done}{contracted ? ` de ${contracted}` : ''}.</p>
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-800 mb-1">Sessões</p>
+                  {sessions.length === 0 ? (
+                    <p className="text-gray-400 italic">Nenhuma sessão registrada.</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {[...sessions].sort((a, b) => a.number - b.number).map((s) => (
+                        <li key={s.id} className="border-l-2 border-purple-200 pl-3">
+                          <span className="font-medium">#{s.number} — {s.date}</span>
+                          <div className="text-xs text-gray-600">
+                            {s.therapies.map((t) => {
+                              const fields = getDosimetryFields(t.modalityId);
+                              const dose = Object.entries(t.dosimetry)
+                                .filter(([, v]) => v)
+                                .map(([k, v]) => `${fields.find((f) => f.key === k)?.label ?? k}: ${v}`)
+                                .join('; ');
+                              return (
+                                <div key={t.id}>{t.name}{dose ? ` (${dose})` : ''}</div>
+                              );
+                            })}
+                          </div>
+                          {s.evolution && <p className="text-xs text-gray-500 mt-0.5">{s.evolution}</p>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
