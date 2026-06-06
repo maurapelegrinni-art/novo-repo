@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FileText, Download } from 'lucide-react';
+import { FileText, Download, AlertTriangle } from 'lucide-react';
 import {
   useAppStore,
   useCurrentPatient,
@@ -16,6 +16,7 @@ type ReportKind = 'avaliacao' | 'evolucao';
 
 export default function Reports() {
   const [selectedReport, setSelectedReport] = useState<ReportKind | null>(null);
+  const [error, setError] = useState('');
 
   const patient = useCurrentPatient();
   const evaluation = useCurrentEvaluation();
@@ -36,8 +37,14 @@ export default function Reports() {
   const done = sessions.length;
 
   const handleDownload = () => {
-    if (selectedReport === 'avaliacao') generateEvaluationReportPDF();
-    if (selectedReport === 'evolucao') generateEvolutionReportPDF();
+    setError('');
+    try {
+      if (selectedReport === 'avaliacao') generateEvaluationReportPDF();
+      if (selectedReport === 'evolucao') generateEvolutionReportPDF();
+    } catch (e) {
+      console.error('[relatorio] falha ao gerar PDF', e);
+      setError('Não foi possível gerar o PDF. ' + (e instanceof Error ? e.message : 'Erro inesperado.'));
+    }
   };
 
   return (
@@ -97,6 +104,12 @@ export default function Reports() {
               Baixar PDF
             </button>
           </div>
+
+          {error && (
+            <div className="mb-4 bg-red-50 border border-red-200 text-red-700 p-3 rounded-xl flex items-start gap-2 text-sm">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" /> <span>{error}</span>
+            </div>
+          )}
 
           {/* Pré-visualização */}
           <div className="border border-gray-200 rounded-xl p-6 bg-gray-50 max-w-2xl mx-auto text-sm text-gray-700 space-y-4">

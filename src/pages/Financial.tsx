@@ -1,21 +1,28 @@
 import { useMemo, useState } from 'react';
 import {
   Calculator, FileDown, MessageCircle, Mail, Settings, TrendingUp, Wallet,
-  Plus, Trash2, CheckCircle2, MapPin, Tag,
+  Plus, Trash2, CheckCircle2, MapPin, Tag, Stethoscope, Package as PackageIcon,
+  CreditCard, Receipt, AlertTriangle,
 } from 'lucide-react';
 import { useAppStore, useCurrentPatient } from '../store/useAppStore';
 import { generateReceiptPDF, type ReceiptInput } from '../utils/pdfGenerator';
 import { PAYMENT_METHODS } from '../constants/clinical';
+import { useAuth } from '../auth/AuthContext';
+import { can } from '../auth/types';
 
 const num = (s: string) => parseFloat(s) || 0;
 const brl = (v: number) => `R$ ${v.toFixed(2)}`;
 const newId = () => Math.random().toString(36).substring(2, 9);
 
+const MIN_SINGLE = 200; // valor mínimo da sessão avulsa (R$)
+
 type EvalMode = 'separate' | 'included' | 'none';
 type ServiceMode = 'single' | 'pkg5' | 'pkg10' | 'custom';
+type TravelMode = 'none' | 'domiciliar' | 'outra';
 
 export default function Financial() {
   const patient = useCurrentPatient();
+  const { user } = useAuth();
   const tutors = useAppStore((s) => s.tutors);
   const pricing = useAppStore((s) => s.pricing);
   const payments = useAppStore((s) => s.payments);
@@ -27,52 +34,88 @@ export default function Financial() {
   const addPackage = useAppStore((s) => s.addPackage);
 
   const [showConfig, setShowConfig] = useState(false);
+  const [pdfError, setPdfError] = useState('');
+  const [okMsg, setOkMsg] = useState('');
+
   const [order, setOrder] = useState({
+    // Bloco 1 — Avaliação
     evalMode: 'included' as EvalMode,
+    evalPrice: pricing.evaluationPrice,
+    evalNote: '',
+    // Bloco 2 — Contratação
     serviceMode: 'pkg10' as ServiceMode,
-    customQty: '10',
-    customUnit: '',
-    cityId: pricing.cities[0]?.id ?? 'clinica',
+    qty: '10',
+    unitPrice: pricing.package10Unit,
+    // Bloco 3 — Deslocamento
+    travelMode: 'none' as TravelMode,
+    travelValue: '0',
+    travelCityName: '',
+    // Bloco 4 — Pagamento
     method: 'PIX',
+    taxPercent: pricing.taxes['PIX'] ?? '0',
   });
+
+  const patch = (p: Partial<typeof order>) => setOrder((o) => ({ ...o, ...p }));
+
+  const selectService = (mode: ServiceMode) => {
+    if (mode === 'single') patch({ serviceMode: mode, qty: '1', unitPrice: String(Math.max(MIN_SINGLE, num(pricing.singleSessionPrice))) });
+    else if (mode === 'pkg5') patch({ serviceMode: mode, qty: '5', unitPrice: pricing.package5Unit });
+    else if (mode === 'pkg10') patch({ serviceMode: mode, qty: '10', unitPrice: pricing.package10Unit });
+    else patch({ serviceMode: mode });
+  };
+
+  const selectMethod = (m: string) => patch({ method: m, taxPercent: pricing.taxes[m] ?? '0' });
 
   const tutor = patient ? tutors.find((t) => t.id === patient.tutorId) : undefined;
 
-  /* -------- cálculo do orçamento (tempo real) -------- */
+  /* -------- cálculo do orçamento -------- */
   const calc = useMemo(() => {
-    const single = num(pricing.singleSessionPrice);
-    const unitFor = (m: ServiceMode) =>
-      m === 'single' ? single
-      : m === 'pkg5' ? num(pricing.package5Unit)
-      : m === 'pkg10' ? num(pricing.package10Unit)
-      : (num(order.customUnit) || single);
-    const qtyFor = (m: ServiceMode) =>
-      m === 'single' ? 1 : m === 'pkg5' ? 5 : m === 'pkg10' ? 10 : (parseInt(order.customQty) || 0);
+    const singleRef = Math.max(MIN_SINGLE, num(pricing.singleSessionPrice));
+    const qty = order.serviceMode === 'single' ? 1
+      : order.serviceMode === 'pkg5' ? 5
+      : order.serviceMode === 'pkg10' ? 10
+      : Math.max(0, parseInt(order.qty) || 0);
+    let unit = num(order.unitPrice);
+    if (order.serviceMode === 'single') unit = Math.max(MIN_SINGLE, unit);
 
-    const unit = unitFor(order.serviceMode);
-    const qty = qtyFor(order.serviceMode);
     const sessionsTotal = unit * qty;
-    const avulsoTotal = single * qty;
-    const discount = Math.max(0, avulsoTotal - sessionsTotal);
+    const avulsoRef = singleRef * qty;
+    const discount = Math.max(0, avulsoRef - sessionsTotal);
 
-    const evalPrice = num(pricing.evaluationPrice);
+    const evalPrice = num(order.evalPrice);
     const evalIncluded = order.evalMode === 'included' ? evalPrice : 0;
     const evalSeparate = order.evalMode === 'separate' ? evalPrice : 0;
 
-    const city = pricing.cities.find((c) => c.id === order.cityId);
-    const displacement = num(city?.value ?? '0');
+    const displacement = order.travelMode === 'none' ? 0 : Math.max(0, num(order.travelValue));
+    const displacementLabel =
+      order.travelMode === 'domiciliar' ? 'Atendimento domiciliar (Poços de Caldas)'
+      : order.travelMode === 'outra' ? `Deslocamento — ${order.travelCityName.trim() || 'outra cidade'}`
+      : '';
 
-    const taxPct = num(pricing.taxes[order.method] ?? '0');
-    const total = sessionsTotal + evalIncluded + evalSeparate + displacement; // pago pelo tutor
+    const taxPct = num(order.taxPercent);
+    const total = sessionsTotal + evalIncluded + evalSeparate + displacement;
     const taxValue = total * (taxPct / 100);
     const net = total - taxValue;
 
-    return { single, unit, qty, sessionsTotal, avulsoTotal, discount, evalPrice, evalIncluded, evalSeparate, displacement, taxPct, total, taxValue, net, cityName: city?.name ?? '' };
+    return {
+      singleRef, qty, unit, sessionsTotal, avulsoRef, discount,
+      evalPrice, evalIncluded, evalSeparate,
+      displacement, displacementLabel,
+      taxPct, total, taxValue, net,
+    };
   }, [pricing, order]);
+
+  const serviceLabel =
+    order.serviceMode === 'single' ? 'Sessão avulsa'
+    : order.serviceMode === 'pkg5' ? 'Pacote de 5 sessões'
+    : order.serviceMode === 'pkg10' ? 'Pacote de 10 sessões'
+    : `Pacote personalizado (${calc.qty}x)`;
+
+  const packageHasAdvantage = order.serviceMode === 'single' || calc.unit < calc.singleRef;
 
   /* -------- comparação avulso x pacotes -------- */
   const comparison = useMemo(() => {
-    const single = num(pricing.singleSessionPrice);
+    const single = Math.max(MIN_SINGLE, num(pricing.singleSessionPrice));
     const mk = (label: string, unit: number, qty: number) => ({
       label, unit, qty, total: unit * qty, economia: Math.max(0, single * qty - unit * qty),
     });
@@ -82,12 +125,6 @@ export default function Financial() {
       mk('Pacote 10', num(pricing.package10Unit), 10),
     ];
   }, [pricing]);
-
-  const serviceLabel =
-    order.serviceMode === 'single' ? 'Sessão avulsa'
-    : order.serviceMode === 'pkg5' ? 'Pacote de 5 sessões'
-    : order.serviceMode === 'pkg10' ? 'Pacote de 10 sessões'
-    : `Pacote personalizado (${calc.qty}x)`;
 
   /* -------- histórico do paciente -------- */
   const patientPayments = payments.filter((p) => p.patientId === patient?.id);
@@ -109,7 +146,7 @@ export default function Financial() {
       .reduce((s, pk) => s + Math.max(0, pk.sessionsContracted - sessions.filter((x) => x.patientId === pk.patientId).length), 0);
     const byCategory = new Map<string, number>();
     payments.forEach((p) => byCategory.set(p.category, (byCategory.get(p.category) || 0) + p.net));
-    return { grossTotal, taxTotal, netTotal, avgPerPatient, pendingSessions, sessionsDone: sessions.length, byCategory: [...byCategory.entries()] };
+    return { grossTotal, taxTotal, netTotal, avgPerPatient, pendingSessions, byCategory: [...byCategory.entries()] };
   }, [payments, packages, sessions]);
 
   const receiptData = (): ReceiptInput => ({
@@ -120,16 +157,35 @@ export default function Financial() {
     evalIncluded: calc.evalIncluded,
     evalSeparate: calc.evalSeparate,
     displacement: calc.displacement,
+    displacementLabel: calc.displacementLabel,
     discount: calc.discount,
     method: order.method,
     taxPct: calc.taxPct,
     taxValue: calc.taxValue,
     total: calc.total,
     net: calc.net,
+    responsible: user?.name,
+    note: order.evalNote.trim() || undefined,
   });
 
+  const handleGenerateReceipt = () => {
+    setPdfError(''); setOkMsg('');
+    if (!patient || !tutor) {
+      setPdfError('Selecione um paciente com tutor cadastrado para gerar o recibo.');
+      return;
+    }
+    try {
+      generateReceiptPDF(receiptData());
+      setOkMsg('Recibo PDF gerado e baixado.');
+    } catch (e) {
+      console.error('[recibo] falha ao gerar PDF', e);
+      setPdfError('Não foi possível gerar o recibo PDF. ' + (e instanceof Error ? e.message : 'Erro inesperado.'));
+    }
+  };
+
   const registerPayment = () => {
-    if (!patient || !tutor) return;
+    setPdfError(''); setOkMsg('');
+    if (!patient || !tutor) { setPdfError('Selecione um paciente para registrar o recebimento.'); return; }
     const today = new Date().toISOString().split('T')[0];
     const gross = calc.sessionsTotal + calc.evalIncluded + calc.evalSeparate;
     addPayment({
@@ -155,42 +211,52 @@ export default function Financial() {
         status: 'ativo',
       });
     }
+    setOkMsg('Recebimento registrado.');
   };
 
   const handleWhatsApp = () => {
-    if (!tutor) return;
+    if (!tutor) { setPdfError('Tutor sem contato cadastrado.'); return; }
     const phone = (tutor.whatsapp || tutor.phone).replace(/\D/g, '');
-    const msg = `Olá, ${tutor.name || 'Tutor'}. Segue o orçamento referente ao atendimento de ${patient?.name || 'seu pet'}:\n\n${serviceLabel}: ${brl(calc.sessionsTotal)}${calc.evalIncluded ? `\nAvaliação inclusa: ${brl(calc.evalIncluded)}` : ''}${calc.evalSeparate ? `\nAvaliação: ${brl(calc.evalSeparate)}` : ''}${calc.displacement ? `\nDeslocamento (${calc.cityName}): ${brl(calc.displacement)}` : ''}\nTotal: ${brl(calc.total)} (${order.method})\n\nDra. Maura Dias Adriano.`;
+    const msg = `Olá, ${tutor.name || 'Tutor'}. Segue o orçamento referente ao atendimento de ${patient?.name || 'seu pet'}:\n\n${serviceLabel}: ${brl(calc.sessionsTotal)}${calc.evalIncluded ? `\nAvaliação inclusa: ${brl(calc.evalIncluded)}` : ''}${calc.evalSeparate ? `\nAvaliação: ${brl(calc.evalSeparate)}` : ''}${calc.displacement ? `\n${calc.displacementLabel}: ${brl(calc.displacement)}` : ''}\nTotal: ${brl(calc.total)} (${order.method})\n\n${user?.name || 'Equipe'} — Dra. Maura Dias Adriano.`;
     window.open(`https://wa.me/55${phone}?text=${encodeURIComponent(msg)}`, '_blank');
   };
 
   const handleEmail = () => {
-    if (!tutor) return;
+    if (!tutor) { setPdfError('Tutor sem e-mail cadastrado.'); return; }
     const subject = `Orçamento - ${patient?.name || 'Paciente'}`;
-    const body = `Olá, ${tutor.name || 'Tutor'}.\n\nSegue o orçamento referente ao atendimento de ${patient?.name || 'seu pet'}.\n\n${serviceLabel}: ${brl(calc.sessionsTotal)}\nTotal: ${brl(calc.total)} (${order.method})\n\nDra. Maura Dias Adriano.`;
+    const body = `Olá, ${tutor.name || 'Tutor'}.\n\nSegue o orçamento referente ao atendimento de ${patient?.name || 'seu pet'}.\n\n${serviceLabel}: ${brl(calc.sessionsTotal)}${calc.displacement ? `\n${calc.displacementLabel}: ${brl(calc.displacement)}` : ''}\nTotal: ${brl(calc.total)} (${order.method})\n\n${user?.name || 'Equipe'} — Dra. Maura Dias Adriano.`;
     window.open(`mailto:${tutor.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, '_blank');
   };
 
-  const radio = (checked: boolean) =>
+  const card = 'bg-white p-6 rounded-2xl shadow-sm border border-gray-100';
+  const blockTitle = (n: number, title: string, icon: React.ReactNode) => (
+    <div className="flex items-center gap-3 mb-4">
+      <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center text-sm font-bold">{n}</div>
+      <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">{icon}{title}</h2>
+    </div>
+  );
+  const chip = (checked: boolean) =>
     `flex items-center gap-2 px-4 py-2.5 rounded-xl border cursor-pointer text-sm font-medium transition-colors ${
       checked ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
     }`;
+  const inputCls = 'w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-purple-500';
 
   return (
     <div className="space-y-6 pb-20 lg:pb-0">
       <header className="mb-2 flex flex-col md:flex-row md:justify-between md:items-end gap-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Financeiro</h1>
-          <p className="text-gray-500 mt-2">Orçamento, cobrança, recebimentos e indicadores comerciais.</p>
+          <p className="text-gray-500 mt-2">Orçamento, recebimento e recibo — em blocos simples.</p>
         </div>
-        <button onClick={() => setShowConfig(!showConfig)}
-          className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-xl font-medium transition-colors flex items-center gap-2 self-start">
-          <Settings size={18} /> Configurar Preços
-        </button>
+        {can(user).editPricing && (
+          <button onClick={() => setShowConfig(!showConfig)}
+            className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-xl font-medium transition-colors flex items-center gap-2 self-start">
+            <Settings size={18} /> Configurar Preços
+          </button>
+        )}
       </header>
 
-      {/* Config de preços */}
-      {showConfig && <PricingConfigPanel />}
+      {showConfig && can(user).editPricing && <PricingConfigPanel />}
 
       {/* Indicadores globais */}
       <div className="bg-gradient-to-r from-purple-900 to-indigo-900 p-6 rounded-2xl shadow-md text-white">
@@ -203,21 +269,11 @@ export default function Financial() {
           <Kpi label="Taxas pagas" value={`- ${brl(indicators.taxTotal)}`} tone="red" />
           <Kpi label="Receita líquida" value={brl(indicators.netTotal)} tone="green" />
           <Kpi label="Ticket médio/paciente" value={brl(indicators.avgPerPatient)} />
-          <Kpi label="Sessões realizadas" value={String(indicators.sessionsDone)} />
+          <Kpi label="Sessões realizadas" value={String(sessions.length)} />
           <Kpi label="Sessões pendentes" value={String(indicators.pendingSessions)} />
           <Kpi label="Recibos emitidos" value={String(payments.length)} />
           <Kpi label="Pacientes" value={String(patients.length)} />
         </div>
-        {indicators.byCategory.length > 0 && (
-          <div className="mt-4 pt-4 border-t border-white/15">
-            <p className="text-xs text-purple-200 mb-2">Receita líquida por categoria</p>
-            <div className="flex flex-wrap gap-2">
-              {indicators.byCategory.map(([cat, val]) => (
-                <span key={cat} className="text-xs bg-white/10 px-3 py-1 rounded-full">{cat}: {brl(val)}</span>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
       {!patient ? (
@@ -226,100 +282,173 @@ export default function Financial() {
         </div>
       ) : (
         <>
-          {/* Orçamento */}
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-6">
-            <div className="flex items-center gap-3">
-              <div className="p-3 bg-purple-100 rounded-lg text-purple-600"><Calculator size={22} /></div>
+          <div className="flex items-center gap-3 px-1">
+            <Calculator size={20} className="text-purple-600" />
+            <p className="text-gray-700"><span className="font-semibold">{patient.name}</span> · Tutor: {tutor?.name || '—'}</p>
+          </div>
+
+          {/* BLOCO 1 — Avaliação inicial */}
+          <div className={card}>
+            {blockTitle(1, 'Avaliação inicial', <Stethoscope size={18} className="text-purple-500" />)}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
               <div>
-                <h2 className="text-xl font-semibold text-gray-800">Orçamento — {patient.name}</h2>
-                <p className="text-sm text-gray-500">Tutor: {tutor?.name || '—'}</p>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Valor da avaliação (R$)</label>
+                <input type="number" className={inputCls} value={order.evalPrice}
+                  onChange={(e) => patch({ evalPrice: e.target.value })} />
               </div>
-            </div>
-
-            {/* Avaliação */}
-            <div>
-              <h3 className="text-sm font-semibold text-gray-700 mb-2">Avaliação ({brl(calc.evalPrice)})</h3>
-              <div className="flex flex-wrap gap-2">
-                {([['separate', 'Cobrada separadamente'], ['included', 'Inclusa no pacote'], ['none', 'Não cobrar']] as [EvalMode, string][]).map(([v, l]) => (
-                  <label key={v} className={radio(order.evalMode === v)}>
-                    <input type="radio" className="hidden" checked={order.evalMode === v} onChange={() => setOrder({ ...order, evalMode: v })} />
-                    {l}
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {/* Serviço */}
-            <div>
-              <h3 className="text-sm font-semibold text-gray-700 mb-2">Serviço</h3>
-              <div className="flex flex-wrap gap-2 mb-3">
-                {([['single', `Sessão avulsa (${brl(num(pricing.singleSessionPrice))})`], ['pkg5', `Pacote 5 (${brl(num(pricing.package5Unit))}/sessão)`], ['pkg10', `Pacote 10 (${brl(num(pricing.package10Unit))}/sessão)`], ['custom', 'Personalizado']] as [ServiceMode, string][]).map(([v, l]) => (
-                  <label key={v} className={radio(order.serviceMode === v)}>
-                    <input type="radio" className="hidden" checked={order.serviceMode === v} onChange={() => setOrder({ ...order, serviceMode: v })} />
-                    {l}
-                  </label>
-                ))}
-              </div>
-              {order.serviceMode === 'custom' && (
-                <div className="grid grid-cols-2 gap-3 max-w-md">
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Quantidade</label>
-                    <input type="number" className="w-full p-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-purple-500"
-                      value={order.customQty} onChange={(e) => setOrder({ ...order, customQty: e.target.value })} />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Valor/sessão (R$)</label>
-                    <input type="number" className="w-full p-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-purple-500"
-                      placeholder={pricing.singleSessionPrice} value={order.customUnit} onChange={(e) => setOrder({ ...order, customUnit: e.target.value })} />
-                  </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Cobrança</label>
+                <div className="flex flex-wrap gap-2">
+                  {([['separate', 'Cobrada separadamente'], ['included', 'Incluída no pacote'], ['none', 'Não cobrar']] as [EvalMode, string][]).map(([v, l]) => (
+                    <label key={v} className={chip(order.evalMode === v)}>
+                      <input type="radio" className="hidden" checked={order.evalMode === v} onChange={() => patch({ evalMode: v })} />
+                      {l}
+                    </label>
+                  ))}
                 </div>
-              )}
-              {calc.unit < calc.single && (
-                <p className="text-xs text-amber-600 mt-2 flex items-center gap-1">
-                  <Tag size={13} /> Valor unitário ({brl(calc.unit)}) abaixo da sessão avulsa ({brl(calc.single)}) — desconto de pacote aplicado.
+              </div>
+            </div>
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Observação</label>
+              <input className={inputCls} placeholder="Ex: avaliação funcional + neurológica inicial"
+                value={order.evalNote} onChange={(e) => patch({ evalNote: e.target.value })} />
+            </div>
+          </div>
+
+          {/* BLOCO 2 — Tipo de contratação */}
+          <div className={card}>
+            {blockTitle(2, 'Tipo de contratação', <PackageIcon size={18} className="text-purple-500" />)}
+            <div className="flex flex-wrap gap-2 mb-4">
+              {([['single', 'Sessão avulsa'], ['pkg5', 'Pacote 5 sessões'], ['pkg10', 'Pacote 10 sessões'], ['custom', 'Personalizado']] as [ServiceMode, string][]).map(([v, l]) => (
+                <label key={v} className={chip(order.serviceMode === v)}>
+                  <input type="radio" className="hidden" checked={order.serviceMode === v} onChange={() => selectService(v)} />
+                  {l}
+                </label>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Quantidade de sessões</label>
+                <input type="number" min={1} className={inputCls} value={String(calc.qty)}
+                  disabled={order.serviceMode !== 'custom'}
+                  onChange={(e) => patch({ qty: e.target.value })} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Valor por sessão (R$)</label>
+                <input type="number" className={inputCls} value={order.unitPrice}
+                  onChange={(e) => patch({ unitPrice: e.target.value })} />
+                {order.serviceMode === 'single' && num(order.unitPrice) < MIN_SINGLE && (
+                  <p className="text-[11px] text-amber-600 mt-1">Mínimo da sessão avulsa: {brl(MIN_SINGLE)} (ajustado automaticamente).</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Valor total</label>
+                <div className="w-full p-2.5 bg-purple-50 border border-purple-100 rounded-lg font-bold text-purple-800">{brl(calc.sessionsTotal)}</div>
+              </div>
+            </div>
+            {order.serviceMode !== 'single' && (
+              packageHasAdvantage ? (
+                <p className="text-xs text-green-600 mt-3 flex items-center gap-1">
+                  <Tag size={13} /> Economia para o tutor vs. avulso: {brl(calc.discount)}.
                 </p>
-              )}
+              ) : (
+                <p className="text-xs text-amber-600 mt-3 flex items-center gap-1">
+                  <AlertTriangle size={13} /> O pacote não está vantajoso: o valor por sessão está ≥ ao avulso ({brl(calc.singleRef)}).
+                </p>
+              )
+            )}
+          </div>
+
+          {/* BLOCO 3 — Deslocamento */}
+          <div className={card}>
+            {blockTitle(3, 'Deslocamento', <MapPin size={18} className="text-purple-500" />)}
+            <div className="flex flex-wrap gap-2 mb-4">
+              {([['none', 'Sem deslocamento'], ['domiciliar', 'Domiciliar em Poços de Caldas'], ['outra', 'Outra cidade']] as [TravelMode, string][]).map(([v, l]) => (
+                <label key={v} className={chip(order.travelMode === v)}>
+                  <input type="radio" className="hidden" checked={order.travelMode === v} onChange={() => patch({ travelMode: v })} />
+                  {l}
+                </label>
+              ))}
+            </div>
+            {order.travelMode !== 'none' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {order.travelMode === 'outra' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Cidade</label>
+                    <input className={inputCls} placeholder="Ex: Caldas, Andradas..."
+                      value={order.travelCityName} onChange={(e) => patch({ travelCityName: e.target.value })} />
+                  </div>
+                )}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Valor do deslocamento (R$)</label>
+                  <input type="number" className={inputCls} value={order.travelValue}
+                    onChange={(e) => patch({ travelValue: e.target.value })} />
+                </div>
+              </div>
+            )}
+            <p className="text-[11px] text-gray-400 mt-3">O deslocamento é cobrado <strong>separado</strong> do pacote e somado ao total.</p>
+          </div>
+
+          {/* BLOCO 4 — Pagamento */}
+          <div className={card}>
+            {blockTitle(4, 'Pagamento', <CreditCard size={18} className="text-purple-500" />)}
+            <div className="flex flex-wrap gap-2 mb-4">
+              {PAYMENT_METHODS.map((m) => (
+                <label key={m} className={chip(order.method === m)}>
+                  <input type="radio" className="hidden" checked={order.method === m} onChange={() => selectMethod(m)} />
+                  {m}
+                </label>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Taxa (%)</label>
+                <input type="number" step="0.01" className={inputCls} value={order.taxPercent}
+                  onChange={(e) => patch({ taxPercent: e.target.value })} />
+              </div>
+              <div className="md:col-span-2 grid grid-cols-2 gap-3">
+                <div className="bg-gray-50 p-3 rounded-xl">
+                  <span className="block text-gray-500 text-xs mb-1">Valor pago pelo tutor</span>
+                  <span className="font-bold text-gray-900">{brl(calc.total)}</span>
+                </div>
+                <div className="bg-green-50 p-3 rounded-xl">
+                  <span className="block text-green-700 text-xs mb-1">Líquido da clínica</span>
+                  <span className="font-bold text-green-700">{brl(calc.net)}</span>
+                </div>
+              </div>
             </div>
 
-            {/* Deslocamento + pagamento */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1"><MapPin size={15} /> Deslocamento</label>
-                <select className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"
-                  value={order.cityId} onChange={(e) => setOrder({ ...order, cityId: e.target.value })}>
-                  {pricing.cities.map((c) => <option key={c.id} value={c.id}>{c.name} — {brl(num(c.value))}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Forma de pagamento</label>
-                <select className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-purple-500"
-                  value={order.method} onChange={(e) => setOrder({ ...order, method: e.target.value })}>
-                  {PAYMENT_METHODS.map((m) => <option key={m} value={m}>{m} ({num(pricing.taxes[m] ?? '0')}%)</option>)}
-                </select>
-              </div>
-            </div>
-
-            {/* Resumo do orçamento */}
-            <div className="bg-purple-50 rounded-xl border border-purple-100 p-4 space-y-1.5 text-sm">
+            {/* Resumo */}
+            <div className="bg-purple-50 rounded-xl border border-purple-100 p-4 space-y-1.5 text-sm mt-4">
               <Row label={serviceLabel} value={brl(calc.sessionsTotal)} />
               {calc.discount > 0 && <Row label="Economia vs avulso" value={`- ${brl(calc.discount)}`} green />}
               {calc.evalIncluded > 0 && <Row label="Avaliação (inclusa)" value={brl(calc.evalIncluded)} />}
               {calc.evalSeparate > 0 && <Row label="Avaliação (separada)" value={brl(calc.evalSeparate)} />}
-              {calc.displacement > 0 && <Row label={`Deslocamento (${calc.cityName})`} value={brl(calc.displacement)} />}
+              {calc.displacement > 0 && <Row label={calc.displacementLabel} value={brl(calc.displacement)} />}
               <Row label={`Taxa ${order.method} (${calc.taxPct}%)`} value={`- ${brl(calc.taxValue)}`} red />
               <div className="border-t border-purple-200 my-1" />
               <Row label="Total pago pelo tutor" value={brl(calc.total)} bold />
               <Row label="Líquido recebido pela clínica" value={brl(calc.net)} bold green />
             </div>
+          </div>
 
+          {/* BLOCO 5 — Recibo */}
+          <div className={card}>
+            {blockTitle(5, 'Recibo', <Receipt size={18} className="text-purple-500" />)}
+            {pdfError && (
+              <div className="mb-4 bg-red-50 border border-red-200 text-red-700 p-3 rounded-xl flex items-start gap-2 text-sm">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0" /> <span>{pdfError}</span>
+              </div>
+            )}
+            {okMsg && <div className="mb-4 bg-green-50 border border-green-200 text-green-700 p-3 rounded-xl text-sm">{okMsg}</div>}
             <div className="flex flex-wrap gap-3">
               <button onClick={registerPayment}
                 className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2.5 rounded-xl font-medium flex items-center gap-2">
-                <CheckCircle2 size={18} /> Registrar Recebimento
+                <CheckCircle2 size={18} /> Registrar recebimento
               </button>
-              <button onClick={() => generateReceiptPDF(receiptData())}
+              <button onClick={handleGenerateReceipt}
                 className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 py-2.5 rounded-xl font-medium flex items-center gap-2">
-                <FileDown size={18} /> Gerar Recibo PDF
+                <FileDown size={18} /> Gerar recibo PDF
               </button>
               <button onClick={handleWhatsApp}
                 className="bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 px-4 py-2.5 rounded-xl font-medium flex items-center gap-2">
@@ -330,11 +459,12 @@ export default function Financial() {
                 <Mail size={18} /> E-mail
               </button>
             </div>
+            <p className="text-[11px] text-gray-400 mt-3">Recebido por: {user?.name || '—'} · O recibo é baixado como PDF no computador.</p>
           </div>
 
-          {/* Comparação de pacotes (apoio à decisão) */}
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-            <h2 className="text-lg font-semibold text-gray-800 mb-4">Comparação de Pacotes</h2>
+          {/* Comparação de pacotes */}
+          <div className={card}>
+            <h2 className="text-lg font-semibold text-gray-800 mb-4">Comparação de pacotes</h2>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {comparison.map((c) => (
                 <div key={c.label} className="border border-gray-200 rounded-xl p-4">
@@ -345,11 +475,10 @@ export default function Financial() {
                 </div>
               ))}
             </div>
-            <p className="text-xs text-gray-500 mt-3">Quanto maior o pacote, maior a economia para o tutor e maior a previsibilidade de receita para a clínica.</p>
           </div>
 
           {/* Histórico financeiro do paciente */}
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+          <div className={card}>
             <div className="flex items-center gap-2 mb-4">
               <Wallet size={20} className="text-purple-600" />
               <h2 className="text-lg font-semibold text-gray-800">Histórico — {patient.name}</h2>
@@ -375,7 +504,9 @@ export default function Financial() {
                         <p className="font-semibold text-gray-800">{brl(p.gross + p.displacement)}</p>
                         <p className="text-xs text-green-600">líq. {brl(p.net)}</p>
                       </div>
-                      <button onClick={() => removePayment(p.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16} /></button>
+                      {can(user).deleteRecords && (
+                        <button onClick={() => removePayment(p.id)} className="text-gray-400 hover:text-red-500"><Trash2 size={16} /></button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -403,7 +534,7 @@ function PricingConfigPanel() {
 
   return (
     <div className="bg-white p-6 rounded-2xl shadow-sm border border-purple-100 space-y-5 animate-fade-in">
-      <h2 className="text-lg font-semibold text-gray-800">Configuração de Preços</h2>
+      <h2 className="text-lg font-semibold text-gray-800">Configuração de Preços (padrões)</h2>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {field('Avaliação (R$)', 'evaluationPrice')}
         {field('Sessão avulsa (R$)', 'singleSessionPrice')}
